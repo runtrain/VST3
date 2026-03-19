@@ -76,6 +76,10 @@ target_sources(RolyPolyFix PRIVATE
     Source/PluginEditor.cpp
 )
 
+# This generates JuceHeader.h, which our source files include.
+# Without this line you get "Cannot open include file: 'JuceHeader.h'".
+juce_generate_juce_header(RolyPolyFix)
+
 target_link_libraries(RolyPolyFix PRIVATE
     juce::juce_audio_utils
     juce::juce_audio_plugin_client
