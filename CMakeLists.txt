@@ -80,6 +80,10 @@ target_sources(RolyPolyFix PRIVATE
 # Without this line you get "Cannot open include file: 'JuceHeader.h'".
 juce_generate_juce_header(RolyPolyFix)
 
+# Disable VST2 compatibility — the VST2 SDK is no longer publicly available.
+# Without this, JUCE tries to include VST2 headers and the build fails.
+target_compile_definitions(RolyPolyFix PUBLIC JUCE_VST3_CAN_REPLACE_VST2=0)
+
 target_link_libraries(RolyPolyFix PRIVATE
     juce::juce_audio_utils
     juce::juce_audio_plugin_client
