@@ -1,68 +1,108 @@
 #pragma once
 // PluginProcessor.h
-// This file DECLARES your plugin's audio processing class.
-// Think of it as a "table of contents" — it lists what the plugin can do,
-// and PluginProcessor.cpp contains the actual instructions.
+// Declares the RolyPolyFix audio processor.
+// This class handles all audio processing: pitch detection, note stabilization,
+// and pitch correction via the SoundTouch library.
 
 #include <JuceHeader.h>
+#include "PitchDetector.h"
+#include <SoundTouch.h>
 
-// AudioProcessorValueTreeState (APVTS) manages all your plugin's parameters.
-// It handles saving/loading, automation in DAWs, and connecting UI controls
-// to audio processing — all automatically.
-
-class SimpleGainAudioProcessor : public juce::AudioProcessor
+class RolyPolyFixAudioProcessor : public juce::AudioProcessor
 {
 public:
-    SimpleGainAudioProcessor();
-    ~SimpleGainAudioProcessor() override;
+    RolyPolyFixAudioProcessor();
+    ~RolyPolyFixAudioProcessor() override;
 
-    // ── Called by the DAW before playback starts ──────────────────────────
-    // Use this to set up anything that depends on sample rate or buffer size.
-    void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-
-    // ── Called by the DAW after playback stops ────────────────────────────
+    void prepareToPlay  (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
+    void processBlock   (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
-    // ── Called repeatedly during playback — this is where audio is processed
-    // buffer: contains the audio samples coming in; you modify it in place
-    // midiMessages: MIDI data (we're not using it for this effect plugin)
-    void processBlock (juce::AudioBuffer<float>& buffer,
-                       juce::MidiBuffer& midiMessages) override;
-
-    // ── UI editor ─────────────────────────────────────────────────────────
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override;
 
-    // ── Plugin identity ───────────────────────────────────────────────────
-    const juce::String getName() const override;
-    bool   acceptsMidi() const override;
-    bool   producesMidi() const override;
-    bool   isMidiEffect() const override;
-    double getTailLengthSeconds() const override;
+    const juce::String getName()          const override;
+    bool   acceptsMidi()                  const override;
+    bool   producesMidi()                 const override;
+    bool   isMidiEffect()                 const override;
+    double getTailLengthSeconds()         const override;
 
-    // ── Preset handling (programs) ────────────────────────────────────────
-    int  getNumPrograms() override;
-    int  getCurrentProgram() override;
-    void setCurrentProgram (int index) override;
-    const juce::String getProgramName (int index) override;
-    void changeProgramName (int index, const juce::String& newName) override;
+    int  getNumPrograms()                          override;
+    int  getCurrentProgram()                       override;
+    void setCurrentProgram (int)                   override;
+    const juce::String getProgramName (int)        override;
+    void changeProgramName (int, const juce::String&) override;
 
-    // ── Save / Load plugin state ──────────────────────────────────────────
-    // The DAW calls these to save your project and reload it later.
-    void getStateInformation (juce::MemoryBlock& destData) override;
-    void setStateInformation (const void* data, int sizeInBytes) override;
+    void getStateInformation (juce::MemoryBlock&)         override;
+    void setStateInformation (const void*, int)           override;
 
     // ── Parameters ────────────────────────────────────────────────────────
-    // APVTS stores all knob/slider values and handles automation for you.
     juce::AudioProcessorValueTreeState apvts;
 
+    // ── Status for the UI (written from audio thread, read from UI thread) ─
+    // These are atomics so the UI can read them safely without locking.
+    std::atomic<float> detectedHz    { -1.0f }; // raw detected frequency
+    std::atomic<int>   detectedNote  { -1 };     // rounded to nearest MIDI note
+    std::atomic<int>   targetNote    { -1 };     // the stabilized, scale-corrected note
+    std::atomic<bool>  correcting    { false };  // true when a correction is being applied
+
+    // Convert MIDI note number to readable name, e.g. 69 → "A4"
+    static juce::String midiNoteToName (int midiNote);
+
 private:
-    // This helper function defines all the parameters your plugin has.
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // SmoothedValue prevents clicks when the gain knob is turned quickly.
-    // Instead of jumping instantly to the new value, it glides smoothly.
-    juce::SmoothedValue<float> smoothedGain;
+    // ── Scale definitions (semitone intervals from root) ──────────────────
+    // Each array lists which intervals belong to that scale.
+    // e.g. Major = root, whole, whole, half, whole, whole, whole, half
+    static constexpr int CHROMATIC_COUNT   = 12;
+    static constexpr int MAJOR_COUNT       = 7;
+    static constexpr int MINOR_COUNT       = 7;
+    static constexpr int PENTATONIC_COUNT  = 5;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SimpleGainAudioProcessor)
+    static const int CHROMATIC  [12];
+    static const int MAJOR      [7];
+    static const int MINOR      [7];
+    static const int PENTATONIC [5];
+
+    // ── Pitch detection ───────────────────────────────────────────────────
+    PitchDetector pitchDetector;
+
+    // We accumulate samples here until we have enough for one YIN analysis.
+    static constexpr int ANALYSIS_SIZE = 2048;   // ~46ms at 44100 Hz
+    static constexpr int HOP_SIZE      = 512;    // re-analyse every ~12ms
+
+    std::vector<float> analysisRing;    // circular buffer of audio
+    int   ringWritePos         = 0;
+    int   samplesSinceAnalysis = 0;
+
+    // ── Note stabilizer ───────────────────────────────────────────────────
+    // Prevents roly-polies: a new note must be detected N times in a row
+    // before we switch the target. N is controlled by the Stabilization knob.
+    int currentTargetNote = -1;  // the note we're currently correcting to
+    int candidateNote     = -1;  // the note we might switch to
+    int candidateCount    = 0;   // how many times in a row we've seen it
+
+    void updateStabilizer (int quantizedNote, int requiredCount);
+
+    // ── Scale quantization ────────────────────────────────────────────────
+    // Snaps a MIDI note to the nearest note allowed in the current scale.
+    int quantizeToScale (int midiNote, int rootKey, int scaleIndex);
+
+    // ── Pitch shifting (SoundTouch) ───────────────────────────────────────
+    soundtouch::SoundTouch soundTouch;
+
+    // Smoothly moves toward the target shift to avoid clicks
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedShift;
+
+    // Temporary interleaved buffers for SoundTouch I/O
+    // (JUCE uses separate L/R arrays; SoundTouch uses interleaved LRLRLR...)
+    std::vector<float> stInput;
+    std::vector<float> stOutput;
+
+    // ── Math helpers ──────────────────────────────────────────────────────
+    static float freqToMidiF  (float hz);      // 440.0 Hz → 69.0
+    static float midiToFreq   (float midi);    // 69.0 → 440.0 Hz
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RolyPolyFixAudioProcessor)
 };

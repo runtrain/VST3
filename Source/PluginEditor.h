@@ -1,38 +1,50 @@
 #pragma once
 // PluginEditor.h
-// This file declares the UI (visual interface) of your plugin.
-// The editor is what you SEE when you open the plugin in your DAW.
+// Declares the visual interface for RolyPolyFix.
 
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 
-class SimpleGainAudioProcessorEditor : public juce::AudioProcessorEditor
+class RolyPolyFixAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                         private juce::Timer
 {
 public:
-    explicit SimpleGainAudioProcessorEditor (SimpleGainAudioProcessor& p);
-    ~SimpleGainAudioProcessorEditor() override;
+    explicit RolyPolyFixAudioProcessorEditor (RolyPolyFixAudioProcessor&);
+    ~RolyPolyFixAudioProcessorEditor() override;
 
-    // paint() draws graphics (backgrounds, labels, etc.)
-    void paint (juce::Graphics& g) override;
-
-    // resized() is called when the window is created or resized.
-    // Use it to set the position and size of your UI components.
-    void resized() override;
+    void paint   (juce::Graphics&) override;
+    void resized () override;
 
 private:
-    // Reference back to the processor so we can read/write parameters
-    SimpleGainAudioProcessor& audioProcessor;
+    // Called by the Timer every ~100ms to refresh the note display
+    void timerCallback() override;
 
-    // A rotary knob (dial) for the gain control
-    juce::Slider gainSlider;
+    RolyPolyFixAudioProcessor& processor;
 
-    // A text label below the knob
-    juce::Label gainLabel;
+    // ── Controls ──────────────────────────────────────────────────────────
+    juce::ComboBox keyBox;       // Key selector (C, C#, D, ...)
+    juce::ComboBox scaleBox;     // Scale selector (Major, Minor, ...)
+    juce::Slider   strengthSlider;
+    juce::Slider   stabilizeSlider;
 
-    // Attachment links the slider to the "gain" APVTS parameter automatically.
-    // When the user moves the slider, the parameter updates.
-    // When the DAW automates the parameter, the slider moves.
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gainAttachment;
+    // Labels above/below each control
+    juce::Label keyLabel;
+    juce::Label scaleLabel;
+    juce::Label strengthLabel;
+    juce::Label stabilizeLabel;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SimpleGainAudioProcessorEditor)
+    // ── Note display ──────────────────────────────────────────────────────
+    // Shows what the plugin detects and what it's correcting to in realtime.
+    juce::Label detectedNoteLabel;
+    juce::Label targetNoteLabel;
+    juce::Label statusLabel;  // "Correcting" or "On target"
+
+    // ── APVTS attachments ─────────────────────────────────────────────────
+    // These keep the UI controls in sync with the processor parameters.
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> keyAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> scaleAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>   strengthAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>   stabilizeAttachment;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RolyPolyFixAudioProcessorEditor)
 };

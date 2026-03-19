@@ -1,96 +1,128 @@
-# Simple Gain — VST3 Plugin
+# RolyPoly Fix — VST3 Pitch Correction Plugin
 
-A beginner-friendly VST3 audio effect plugin built with JUCE.
-It has a single **Gain** knob that controls the volume of incoming audio.
+Automatically fixes the "roly-poly" effect caused by hard autotune (retune speed 0).
 
----
+When your autotune snaps a vocal to the **wrong** note, this plugin detects it and
+silently shifts it to the nearest **correct** note in your chosen scale — in realtime,
+without you having to do it manually in Melodyne.
 
-## What's in this project?
-
-```
-VST3/
-├── CMakeLists.txt          ← Build script (tells CMake how to compile your plugin)
-└── Source/
-    ├── PluginProcessor.h   ← Declares the audio processing class
-    ├── PluginProcessor.cpp ← Audio processing logic (where sound gets modified)
-    ├── PluginEditor.h      ← Declares the UI class
-    └── PluginEditor.cpp    ← UI layout and drawing code
-```
+Works with **Audacity 3.2+** realtime effects.
 
 ---
 
-## How to Build (Step by Step)
+## How it works (plain English)
 
-### 1. Install the required tools
+1. Your vocal comes in — already processed by your hard autotune
+2. The plugin listens and detects which note is being sung
+3. It checks: is this note in the scale you picked?
+4. If **yes** → passes through untouched
+5. If **no** → smoothly shifts the pitch to the nearest correct scale note
+6. The **Stabilization** knob stops it from flickering between two notes (= no roly-polies)
 
-You need three things installed on your computer:
+---
 
-| Tool | What it does | Download |
-|------|-------------|----------|
-| **Git** | Downloads JUCE automatically | https://git-scm.com |
-| **CMake** (3.22+) | Builds the project | https://cmake.org/download |
-| **A C++ compiler** | Compiles the code | See below |
+## Controls
 
-**Compiler by platform:**
-- **Windows**: Install [Visual Studio 2022](https://visualstudio.microsoft.com/) (Community is free) — check "Desktop development with C++"
-- **macOS**: Run `xcode-select --install` in Terminal
-- **Linux**: Run `sudo apt install build-essential` (Ubuntu/Debian)
+| Control | What it does |
+|---------|-------------|
+| **Key** | The root note of your song (e.g. C, F#, A) |
+| **Scale** | Which notes are "correct" (Major, Minor, Pentatonic, or Chromatic for any key) |
+| **Correction** | How hard it corrects. 0% = off, 80% = natural-sounding, 100% = fully snapped |
+| **Stabilize** | How many times a note must be detected before the plugin locks onto it. Higher = less roly-poly, but slower to track fast runs |
 
-### 2. Build the plugin
+### Note Display (bottom of plugin)
+- **Left number**: what note the plugin is currently hearing
+- **Right number**: what it's correcting to
+- **"Correcting"** (cyan): a correction is being applied right now
+- **"On target"** (teal): the note is already correct, nothing changed
+- **"No signal"**: silence detected
 
-Open a Terminal (or Command Prompt on Windows) in this folder and run:
+---
+
+## Suggested starting settings
+
+For most vocal correction use cases:
+- **Key**: match your beat's key
+- **Scale**: Major or Minor (whichever your beat uses)
+- **Correction**: 75–85%
+- **Stabilize**: 3–5
+
+If you still get occasional roly-polies → increase **Stabilize**
+If the plugin is too slow to track fast vocal runs → decrease **Stabilize**
+
+---
+
+## How to Build
+
+### Step 1: Install tools
+
+| Tool | Download |
+|------|----------|
+| **Git** | https://git-scm.com |
+| **CMake 3.22+** | https://cmake.org/download |
+| **C++ compiler** | Windows: [Visual Studio 2022](https://visualstudio.microsoft.com/) (check "Desktop dev with C++") · macOS: `xcode-select --install` · Linux: `sudo apt install build-essential` |
+
+### Step 2: Build
+
+Open a terminal in this folder:
 
 ```bash
-# Step 1: Configure the project (downloads JUCE automatically — takes a few minutes)
+# Configure — downloads JUCE and SoundTouch automatically (~5 min first time)
 cmake -B build
 
-# Step 2: Compile the plugin
+# Compile
 cmake --build build --config Release
 ```
 
-### 3. Find your built plugin
+### Step 3: Install
 
-After building, find your `.vst3` file here:
+Copy the `.vst3` file to your DAW's plugin folder:
 
-- **Windows**: `build\SimpleGain_artefacts\Release\VST3\SimpleGain.vst3`
-- **macOS**: `build/SimpleGain_artefacts/Release/VST3/SimpleGain.vst3`
-- **Linux**: `build/SimpleGain_artefacts/Release/VST3/SimpleGain.vst3`
+| OS | Built file location | Install to |
+|----|---------------------|------------|
+| Windows | `build\RolyPolyFix_artefacts\Release\VST3\RolyPolyFix.vst3` | `C:\Program Files\Common Files\VST3\` |
+| macOS | `build/RolyPolyFix_artefacts/Release/VST3/RolyPolyFix.vst3` | `/Library/Audio/Plug-Ins/VST3/` |
+| Linux | `build/RolyPolyFix_artefacts/Release/VST3/RolyPolyFix.vst3` | `~/.vst3/` |
 
-Copy it to your DAW's VST3 folder:
+### Step 4: Use in Audacity
 
-- **Windows**: `C:\Program Files\Common Files\VST3\`
-- **macOS**: `/Library/Audio/Plug-Ins/VST3/`
-- **Linux**: `~/.vst3/`
-
-Then rescan plugins in your DAW — Simple Gain will appear!
-
----
-
-## How to Customize
-
-### Change the gain range
-In `Source/PluginProcessor.cpp`, find:
-```cpp
-juce::NormalisableRange<float> (0.0f, 2.0f, 0.01f)
-```
-Change `2.0f` to a higher number for more gain (e.g. `4.0f` for up to 4x volume).
-
-### Change the UI colour
-In `Source/PluginEditor.cpp`, find:
-```cpp
-gainSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colours::cornflowerblue);
-```
-Replace `cornflowerblue` with any colour name from the [JUCE colour list](https://docs.juce.com/master/classColours.html).
-
-### Add a new parameter (e.g. a Pan knob)
-1. In `PluginProcessor.cpp` → `createParameterLayout()`, add a new `AudioParameterFloat`
-2. In `PluginEditor.h`, add a new `juce::Slider` and `SliderAttachment`
-3. In `PluginEditor.cpp`, set up and position the new slider
+1. Open Audacity
+2. Go to **Effects → Add / Remove Plug-ins**
+3. Scan for new VST3 plugins — RolyPoly Fix should appear
+4. Select a track, go to **Effects → Realtime Effects**
+5. Add **RolyPoly Fix** from the list
+6. Press play — the plugin works in realtime
 
 ---
 
-## Learning Resources
+## Project structure
 
-- [JUCE Tutorials](https://juce.com/learn/tutorials) — official beginner guides
-- [The Audio Programmer (YouTube)](https://www.youtube.com/@TheAudioProgrammer) — excellent video tutorials
-- [JUCE Forum](https://forum.juce.com) — friendly community for questions
+```
+VST3/
+├── CMakeLists.txt              ← Build script
+├── README.md                   ← This file
+└── Source/
+    ├── PitchDetector.h         ← YIN pitch detection algorithm
+    ├── PluginProcessor.h/cpp   ← Audio processing & pitch correction logic
+    └── PluginEditor.h/cpp      ← Plugin UI
+```
+
+---
+
+## Troubleshooting
+
+**"The plugin doesn't appear in Audacity"**
+→ Make sure the `.vst3` file is in the correct folder and you've re-scanned.
+→ Audacity must be version 3.2 or newer for VST3 support.
+
+**"I still hear roly-polies"**
+→ Increase the **Stabilize** knob (try 6–8).
+→ Make sure you set the correct Key and Scale for your song.
+
+**"The vocals sound slightly off-pitch"**
+→ Lower the **Correction** knob to around 60–70%.
+→ Double-check that your Key/Scale settings match the beat.
+
+**"Build fails with errors about SoundTouch"**
+→ Make sure you have an internet connection when running `cmake -B build` (it downloads SoundTouch).
+→ On Windows, open the `.sln` file in `build/` with Visual Studio and build from there.

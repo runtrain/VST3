@@ -1,58 +1,85 @@
-# CMakeLists.txt — the build script for your plugin
-# CMake reads this file to know how to compile your C++ code into a .vst3 file
-
 cmake_minimum_required(VERSION 3.22)
+project(RolyPolyFix VERSION 1.0.0)
 
-# The name of your project (change this to whatever you like)
-project(SimpleGain VERSION 1.0.0)
-
-# Use C++17 (a modern version of C++)
 set(CMAKE_CXX_STANDARD 17)
 
-# ── Download JUCE automatically ───────────────────────────────────────────────
-# FetchContent downloads JUCE from GitHub the first time you build.
-# You don't need to install it manually.
 include(FetchContent)
+
+# ── Download JUCE ─────────────────────────────────────────────────────────────
 FetchContent_Declare(
     JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        7.0.12   # a stable release of JUCE
-    GIT_SHALLOW    TRUE     # faster download (no full history)
+    GIT_TAG        7.0.12
+    GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(JUCE)
 
+# ── Download SoundTouch (pitch shifting library) ──────────────────────────────
+# SoundTouch handles the math of shifting pitch without changing tempo.
+FetchContent_Declare(
+    soundtouch_src
+    GIT_REPOSITORY https://codeberg.org/soundtouch/soundtouch.git
+    GIT_TAG        2.3.3
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(soundtouch_src)
+if(NOT soundtouch_src_POPULATED)
+    FetchContent_Populate(soundtouch_src)
+endif()
+
+# Compile SoundTouch sources directly (bypasses their CMake for reliability)
+file(GLOB SOUNDTOUCH_SOURCES
+    "${soundtouch_src_SOURCE_DIR}/source/SoundTouch/*.cpp"
+)
+# Exclude architecture-specific SIMD files — the portable C++ fallback is used instead.
+# Remove these lines if you want MMX/SSE/NEON acceleration (may require extra compiler flags).
+list(FILTER SOUNDTOUCH_SOURCES EXCLUDE REGEX ".*_optimized\\.cpp$")
+
+add_library(SoundTouchLib STATIC ${SOUNDTOUCH_SOURCES})
+target_include_directories(SoundTouchLib PUBLIC
+    "${soundtouch_src_SOURCE_DIR}/include"
+    "${soundtouch_src_SOURCE_DIR}/source/SoundTouch"
+)
+# SOUNDTOUCH_FLOAT_SAMPLES: use float (matches JUCE's audio format)
+# SOUNDTOUCH_PREVENT_CLICK_AT_PITCH_CHANGE: smoother transitions
+target_compile_definitions(SoundTouchLib PUBLIC
+    SOUNDTOUCH_FLOAT_SAMPLES=1
+    SOUNDTOUCH_PREVENT_CLICK_AT_PITCH_CHANGE=1
+)
+# Suppress third-party warnings so your build output stays clean
+if(MSVC)
+    target_compile_options(SoundTouchLib PRIVATE /W0)
+else()
+    target_compile_options(SoundTouchLib PRIVATE -w)
+endif()
+
 # ── Define your plugin ────────────────────────────────────────────────────────
-juce_add_plugin(SimpleGain
+juce_add_plugin(RolyPolyFix
+    PLUGIN_NAME         "RolyPoly Fix"
+    COMPANY_NAME        "MyStudio"
+    PLUGIN_MANUFACTURER_CODE "MySt"
+    PLUGIN_CODE         "RPFx"
 
-    # Basic info shown in your DAW
-    PLUGIN_NAME         "Simple Gain"
-    COMPANY_NAME        "MyCompany"
-    PLUGIN_MANUFACTURER_CODE "MyCo"   # 4-character ID for your company
-    PLUGIN_CODE         "SGai"        # 4-character ID for this plugin
-
-    # Plugin type: we want VST3 (and also standalone so you can run it without a DAW)
+    # Build as VST3 (for Audacity) AND as a standalone app for testing
     FORMATS             VST3 Standalone
 
-    # This is an audio effect (not an instrument)
     IS_SYNTH            FALSE
     NEEDS_MIDI_INPUT    FALSE
     NEEDS_MIDI_OUTPUT   FALSE
     IS_MIDI_EFFECT      FALSE
 
-    # Where your source files live
-    PRODUCT_NAME        "SimpleGain"
+    PRODUCT_NAME        "RolyPolyFix"
 )
 
-# ── Tell CMake which source files to compile ──────────────────────────────────
-target_sources(SimpleGain PRIVATE
+target_sources(RolyPolyFix PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
 )
 
-# ── Link JUCE modules your plugin uses ───────────────────────────────────────
-target_link_libraries(SimpleGain PRIVATE
-    juce::juce_audio_utils      # Audio processing utilities
-    juce::juce_audio_plugin_client  # VST3/plugin wrapper code
+target_link_libraries(RolyPolyFix PRIVATE
+    juce::juce_audio_utils
+    juce::juce_audio_plugin_client
+    SoundTouchLib
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
