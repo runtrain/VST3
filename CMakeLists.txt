@@ -31,10 +31,6 @@ endif()
 file(GLOB SOUNDTOUCH_SOURCES
     "${soundtouch_src_SOURCE_DIR}/source/SoundTouch/*.cpp"
 )
-# Exclude all architecture-specific SIMD files.
-# SOUNDTOUCH_ALLOW_X86_OPTIMIZATIONS=0 (below) tells SoundTouch not to reference them.
-list(FILTER SOUNDTOUCH_SOURCES EXCLUDE REGEX ".*_optimized\\.cpp$")
-
 add_library(SoundTouchLib STATIC ${SOUNDTOUCH_SOURCES})
 target_include_directories(SoundTouchLib PUBLIC
     "${soundtouch_src_SOURCE_DIR}/include"
@@ -47,7 +43,6 @@ target_include_directories(SoundTouchLib PUBLIC
 target_compile_definitions(SoundTouchLib PUBLIC
     SOUNDTOUCH_FLOAT_SAMPLES=1
     SOUNDTOUCH_PREVENT_CLICK_AT_PITCH_CHANGE=1
-    SOUNDTOUCH_ALLOW_X86_OPTIMIZATIONS=0
 )
 # Suppress third-party warnings so your build output stays clean
 if(MSVC)
