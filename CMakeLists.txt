@@ -31,9 +31,9 @@ endif()
 file(GLOB SOUNDTOUCH_SOURCES
     "${soundtouch_src_SOURCE_DIR}/source/SoundTouch/*.cpp"
 )
-# Exclude architecture-specific SIMD files — the portable C++ fallback is used instead.
-# Remove these lines if you want MMX/SSE/NEON acceleration (may require extra compiler flags).
-list(FILTER SOUNDTOUCH_SOURCES EXCLUDE REGEX ".*_optimized\\.cpp$")
+# Exclude only ARM NEON files — they won't compile on Windows/Linux x86-64.
+# SSE and MMX files are kept because TDStretch.cpp references them directly on x86.
+list(FILTER SOUNDTOUCH_SOURCES EXCLUDE REGEX ".*neon_optimized\\.cpp$")
 
 add_library(SoundTouchLib STATIC ${SOUNDTOUCH_SOURCES})
 target_include_directories(SoundTouchLib PUBLIC
