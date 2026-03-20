@@ -101,6 +101,23 @@ public:
                 nextSynth    += t1;
             }
 
+            // ── 2b. Catch-up: re-sync if synthesis pointer has fallen behind ─
+            // When shifting UP (ratio > 1), t1 < t0, so nextSynth drifts
+            // behind outputHead at ~(t0-t1)/t0 per grain.  After ~t0/(t0-t1)
+            // grains the grain center is past outputHead and the accumulated
+            // samples are zero — audible as silence/noise.
+            //
+            // Fix: if the right edge of the last-placed grain (nextSynth + half)
+            // is already behind outputHead, skip forward by one synthesis hop
+            // without placing a grain.  Neighboring grains (spaced t1 apart,
+            // length 2*t0 > 2*t1) always overlap enough to fill the gap, so
+            // the OLA normaliser keeps the output level correct.
+            while (nextSynth + (float)half < (float)outputHead)
+            {
+                nextSynth    += t1;
+                nextAnalysis += t0;
+            }
+
             // ── 3. Read PSOLA output sample and clear the slot ────────────
             const int   rpos    = outputHead & RING_MASK;
             const float norm    = outputNorm[rpos];
