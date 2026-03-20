@@ -42,22 +42,30 @@ public:
         // Default T0: A3 (220 Hz) — updated on first real pitch detection
         const float defaultT0 = sr / 220.0f;
 
-        // Seed inputHead forward by defaultT0 so the first grain fires at
-        // sample 0 and the output is valid immediately (inputRing is filled
-        // with zeros, which is fine — silence in = silence out).
-        inputHead    = (int)(defaultT0 + 0.5f);
+        // bypassDelay = the fixed number of samples the PSOLA output lags behind
+        // the input (inputHead starts bypassDelay ahead of outputHead).
+        // We reuse this exact value for the bypass path so both paths have the
+        // same latency and the crossfade between them is click-free.
+        bypassDelay = (int)(defaultT0 + 0.5f);
+
+        inputHead    = bypassDelay;
         outputHead   = 0;
         nextAnalysis = 0.0f;
         nextSynth    = defaultT0;   // first grain center at defaultT0 in output
         lastT0       = defaultT0;
+        crossfadePos = 0.0f;        // start in bypass mode
     }
 
     // Process one audio block.
     //   input/output   — audio buffers (numSamples each)
-    //   shiftSemitones — pitch shift amount (0.0 = bypass → perfect reconstruction)
+    //   shiftSemitones — pitch shift amount (0.0 = bypass, non-zero = PSOLA active)
     //   T0             — pitch period in samples (sampleRate / detectedHz), 0 if unvoiced
     //
-    // Latency = T0 samples (typically 2–10ms — very low).
+    // Latency = bypassDelay samples (fixed, equal to T0 at A3 ≈ 200 samples / ~4ms).
+    //
+    // When shiftSemitones == 0 the output is a plain delayed copy of the input —
+    // no grain processing artifacts. When non-zero, PSOLA kicks in and is
+    // crossfaded in over ~11ms to avoid clicks at the transition.
     void process (const float* input, float* output, int numSamples,
                   float shiftSemitones, float T0)
     {
@@ -72,15 +80,20 @@ public:
         const int   grainLen = std::min ((int)(2.0f * t0 + 0.5f), RING / 4);
         const int   half     = grainLen / 2;
 
+        // Target crossfade position: 0 = bypass, 1 = PSOLA
+        const float crossfadeTarget = (shiftSemitones == 0.0f) ? 0.0f : 1.0f;
+        // Step size: transition over 512 samples (~11ms at 44100 Hz)
+        const float crossfadeStep   = 1.0f / 512.0f;
+
         for (int i = 0; i < numSamples; ++i)
         {
             // ── 1. Write one sample of input ──────────────────────────────
             inputRing[inputHead & RING_MASK] = input[i];
             ++inputHead;
 
-            // ── 2. Place grains whenever we have enough input buffered ────
-            // Condition: the grain is fully inside the recorded input, i.e.
-            // its rightmost sample (center + half) has already been written.
+            // ── 2. Always advance the PSOLA grain engine ──────────────────
+            // We keep the engine running even during bypass so its state is
+            // current when correction kicks back in, avoiding a jump artifact.
             while (nextAnalysis + (float)half < (float)inputHead)
             {
                 placeGrain (grainLen, t1);
@@ -88,15 +101,26 @@ public:
                 nextSynth    += t1;
             }
 
-            // ── 3. Read one output sample from the accumulator ────────────
-            const int   rpos = outputHead & RING_MASK;
-            const float norm = outputNorm[rpos];
-            output[i] = (norm > 1e-4f) ? (outputAccum[rpos] / norm) : 0.0f;
-
-            // Clear the slot so it can be reused by future grains
+            // ── 3. Read PSOLA output sample and clear the slot ────────────
+            const int   rpos    = outputHead & RING_MASK;
+            const float norm    = outputNorm[rpos];
+            const float psolaOut = (norm > 1e-4f) ? (outputAccum[rpos] / norm) : 0.0f;
             outputAccum[rpos] = 0.0f;
             outputNorm [rpos] = 0.0f;
             ++outputHead;
+
+            // ── 4. Read bypass output (fixed delay, artifact-free) ────────
+            // inputHead - 1 is the sample just written; go back bypassDelay
+            // more to get the delayed version with the same latency as PSOLA.
+            const float bypassOut = inputRing[(inputHead - 1 - bypassDelay) & RING_MASK];
+
+            // ── 5. Smooth crossfade toward target ─────────────────────────
+            if (crossfadePos < crossfadeTarget)
+                crossfadePos = std::min (crossfadePos + crossfadeStep, crossfadeTarget);
+            else if (crossfadePos > crossfadeTarget)
+                crossfadePos = std::max (crossfadePos - crossfadeStep, crossfadeTarget);
+
+            output[i] = bypassOut * (1.0f - crossfadePos) + psolaOut * crossfadePos;
         }
     }
 
@@ -111,16 +135,20 @@ public:
         std::fill (outputNorm .begin(), outputNorm .end(), 0.0f);
 
         const float defaultT0 = sr / 220.0f;
-        inputHead    = (int)(defaultT0 + 0.5f);
+        bypassDelay  = (int)(defaultT0 + 0.5f);
+        inputHead    = bypassDelay;
         outputHead   = 0;
         nextAnalysis = 0.0f;
         nextSynth    = defaultT0;
         lastT0       = defaultT0;
+        crossfadePos = 0.0f;
     }
 
 private:
-    float sr     = 44100.0f;
-    float lastT0 = 200.0f;
+    float sr          = 44100.0f;
+    float lastT0      = 200.0f;
+    int   bypassDelay = 200;    // samples; set in prepare() to match PSOLA latency
+    float crossfadePos = 0.0f;  // 0 = bypass, 1 = PSOLA
 
     std::vector<float> inputRing;    // circular buffer of recent input audio
     std::vector<float> outputAccum;  // overlap-add accumulator for output

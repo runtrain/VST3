@@ -66,9 +66,10 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     currentT0 = (float)(sampleRate / 220.0);  // default until first pitch detection
 
     // Declare our latency to the host.
-    // YIN analysis window is ANALYSIS_SIZE samples; PSOLA adds ~T0 ≤ 680 samples.
-    // We report ANALYSIS_SIZE/2 to the host — conservative, keeps track sync clean.
-    setLatencySamples (ANALYSIS_SIZE / 2);
+    // Both the PSOLA path and the bypass path delay by exactly bypassDelay =
+    // (int)(sampleRate/220 + 0.5) samples (~200 samples / ~4ms at 44100 Hz).
+    // Report this so the DAW can keep the track in sync.
+    setLatencySamples ((int)(sampleRate / 220.0 + 0.5));
 
     // Reset state
     currentTargetNote    = -1;
