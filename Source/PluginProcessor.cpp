@@ -6,8 +6,6 @@
 #include "PluginEditor.h"
 
 // ── Scale tables ──────────────────────────────────────────────────────────────
-// Semitone intervals from the root note for each scale.
-// e.g. C Major = C(0) D(2) E(4) F(5) G(7) A(9) B(11)
 const int RolyPolyFixAudioProcessor::CHROMATIC  [12] = {0,1,2,3,4,5,6,7,8,9,10,11};
 const int RolyPolyFixAudioProcessor::MAJOR      [7]  = {0,2,4,5,7,9,11};
 const int RolyPolyFixAudioProcessor::MINOR      [7]  = {0,2,3,5,7,8,10};
@@ -33,28 +31,24 @@ RolyPolyFixAudioProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    // Key: which note is the "root" of the scale (C = 0, C# = 1, ... B = 11)
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         "key", "Key",
         juce::StringArray {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"},
         0));
 
-    // Scale: which intervals are "allowed" notes
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         "scale", "Scale",
         juce::StringArray {"Chromatic","Major","Minor","Pentatonic Major"},
         0));
 
-    // Correction Strength: 0 = no change, 1 = fully snap to scale note
-    // Around 0.7–0.9 sounds natural; 1.0 is robotic.
+    // Correction Strength: 0 = no change, 1 = fully snap to scale note.
+    // Default 0.85 — strong enough to fix a miss without sounding robotic.
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         "strength", "Correction Strength",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f),
-        0.80f));
+        0.85f));
 
     // Stabilization: how many consecutive detections before locking to a new note.
-    // Higher = less likely to get roly-polies, but slower to respond to intentional note changes.
-    // 1 = instant (no stabilization), 8 = very stable.
     layout.add (std::make_unique<juce::AudioParameterInt> (
         "stabilize", "Stabilization", 1, 10, 4));
 
@@ -62,51 +56,25 @@ RolyPolyFixAudioProcessor::createParameterLayout()
 }
 
 // ── prepareToPlay ─────────────────────────────────────────────────────────────
-// Called by the DAW before playback starts. Set up all stateful objects here
-// because sampleRate and bufferSize are only known at this point.
 void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     pitchDetector.setSampleRate ((float)sampleRate);
 
-    // SoundTouch setup
-    int numCh = juce::jmin (getTotalNumInputChannels(), 2);
-    soundTouch.setSampleRate  ((uint)sampleRate);
-    soundTouch.setChannels    ((uint)numCh);
-    soundTouch.setTempoChange (0.0);     // change pitch only, not tempo
-    soundTouch.setPitchSemiTones (0.0f);
-    // Quality settings tuned for vocals:
-    soundTouch.setSetting (SETTING_USE_QUICKSEEK,  0);   // full quality (was 1 = fast/low-quality)
-    soundTouch.setSetting (SETTING_USE_AA_FILTER,  1);
-    soundTouch.setSetting (SETTING_SEQUENCE_MS,   40);   // shorter processing window for vocals
-    soundTouch.setSetting (SETTING_SEEKWINDOW_MS, 15);   // tighter seek for clean pitch shifts
-    soundTouch.setSetting (SETTING_OVERLAP_MS,     8);   // standard overlap
-    soundTouch.clear();
+    psolaL.prepare (sampleRate);
+    psolaR.prepare (sampleRate);
 
-    // Pre-prime SoundTouch with silence so its internal buffer is full on the
-    // first processBlock call. Without this, receiveSamples returns 0 for the
-    // first ~ANALYSIS_SIZE samples, which causes a zero-filled gap → click.
-    {
-        std::vector<float> zeros ((size_t)(ANALYSIS_SIZE * numCh), 0.0f);
-        soundTouch.putSamples (zeros.data(), (uint)ANALYSIS_SIZE);
-    }
+    currentT0 = (float)(sampleRate / 220.0);  // default until first pitch detection
 
-    // Pre-allocate I/O interleave buffers for worst-case block size
-    stInput .resize ((size_t)(samplesPerBlock * numCh));
-    stOutput.resize ((size_t)(samplesPerBlock * numCh));
-
-    // 50ms ramp on the final shift value — just enough to prevent clicks
-    // without creating audible pitch glides during note transitions.
-    smoothedShift.reset ((int)sampleRate, 0.05);
-    smoothedShift.setCurrentAndTargetValue (0.0f);
-
-    // Declare our latency to the host so it can compensate (for track sync)
+    // Declare our latency to the host.
+    // YIN analysis window is ANALYSIS_SIZE samples; PSOLA adds ~T0 ≤ 680 samples.
+    // We report ANALYSIS_SIZE/2 to the host — conservative, keeps track sync clean.
     setLatencySamples (ANALYSIS_SIZE / 2);
 
     // Reset state
-    currentTargetNote  = -1;
-    candidateNote      = -1;
-    candidateCount     = 0;
-    ringWritePos       = 0;
+    currentTargetNote    = -1;
+    candidateNote        = -1;
+    candidateCount       = 0;
+    ringWritePos         = 0;
     samplesSinceAnalysis = 0;
     detectedHz   = -1.0f;
     detectedNote = -1;
@@ -116,7 +84,8 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
 
 void RolyPolyFixAudioProcessor::releaseResources()
 {
-    soundTouch.clear();
+    psolaL.reset();
+    psolaR.reset();
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
@@ -124,13 +93,12 @@ void RolyPolyFixAudioProcessor::releaseResources()
 float RolyPolyFixAudioProcessor::freqToMidiF (float hz)
 {
     if (hz <= 0.0f) return -1.0f;
-    // MIDI note 69 = A4 = 440 Hz
     return 12.0f * std::log2f (hz / 440.0f) + 69.0f;
 }
 
 float RolyPolyFixAudioProcessor::midiToFreq (float midi)
 {
-    return 440.0f * std::powf (2.0f, (midi - 69.0f) / 12.0f);
+    return 440.0f * std::pow (2.0f, (midi - 69.0f) / 12.0f);
 }
 
 juce::String RolyPolyFixAudioProcessor::midiNoteToName (int midi)
@@ -142,8 +110,6 @@ juce::String RolyPolyFixAudioProcessor::midiNoteToName (int midi)
 }
 
 // ── Scale quantization ────────────────────────────────────────────────────────
-// Returns the MIDI note number that is closest to 'midiNote' while being
-// a member of the given scale (rooted at rootKey).
 int RolyPolyFixAudioProcessor::quantizeToScale (int midiNote, int rootKey, int scaleIndex)
 {
     const int* intervals = nullptr;
@@ -159,18 +125,13 @@ int RolyPolyFixAudioProcessor::quantizeToScale (int midiNote, int rootKey, int s
     int bestNote = midiNote;
     int minDist  = 100;
 
-    // Search across nearby octaves to find the closest allowed note
     for (int octave = -2; octave <= 2; ++octave)
     {
         for (int i = 0; i < count; ++i)
         {
             int candidate = rootKey + octave * 12 + intervals[i];
             int dist = std::abs (midiNote - candidate);
-            if (dist < minDist)
-            {
-                minDist  = dist;
-                bestNote = candidate;
-            }
+            if (dist < minDist) { minDist = dist; bestNote = candidate; }
         }
     }
 
@@ -178,8 +139,6 @@ int RolyPolyFixAudioProcessor::quantizeToScale (int midiNote, int rootKey, int s
 }
 
 // ── Note stabilizer ───────────────────────────────────────────────────────────
-// Prevents roly-polies: we don't switch the target note until the same
-// quantized note has been detected 'requiredCount' times in a row.
 void RolyPolyFixAudioProcessor::updateStabilizer (int quantizedNote, int requiredCount,
                                                     float rawMidiF)
 {
@@ -196,14 +155,11 @@ void RolyPolyFixAudioProcessor::updateStabilizer (int quantizedNote, int require
         return;
     }
 
-    // Dead zone: if the singer's actual pitch (before quantization) is within
-    // 0.8 semitones of the current target, don't even consider switching.
-    // This stops the rapid C↔C# flipping that causes the "pitch wheel" wobble
-    // when the singer sits near the boundary between two scale notes.
+    // Dead zone: if the singer's raw pitch is within 0.8 semitones of the
+    // current target, don't consider switching notes.
     if (currentTargetNote >= 0)
     {
         float dist = rawMidiF - (float)currentTargetNote;
-        // Fold octave distance
         dist -= 12.0f * std::round (dist / 12.0f);
         if (std::abs (dist) < 0.8f)
         {
@@ -240,12 +196,8 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     const int numSamples  = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
-    const int numST       = soundTouch.numChannels(); // 1 or 2
 
-    // ── 1. Accumulate audio for pitch detection ───────────────────────────
-    // We only analyse channel 0 (left/mono). The pitch detection needs about
-    // 2048 samples before it can make a measurement, so we buffer the incoming
-    // audio in a circular ring buffer and run the analysis every HOP_SIZE samples.
+    // ── 1. Pitch detection ────────────────────────────────────────────────
     const float* ch0 = buffer.getReadPointer (0);
 
     for (int i = 0; i < numSamples; ++i)
@@ -258,21 +210,20 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         {
             samplesSinceAnalysis = 0;
 
-            // Copy the circular buffer into a contiguous window (oldest → newest)
             for (int j = 0; j < ANALYSIS_SIZE; ++j)
                 analysisWindow[j] = analysisRing[(ringWritePos + j) % ANALYSIS_SIZE];
 
-            // Run YIN pitch detection
             float hz = pitchDetector.detectPitch (analysisWindow.data(), ANALYSIS_SIZE);
             detectedHz.store (hz);
 
-            // Read current parameter values
-            int rootKey    = (int)apvts.getRawParameterValue ("key")->load() + 60; // C4 = MIDI 60
-            int scaleIdx   = (int)apvts.getRawParameterValue ("scale")->load();
-            int stabilize  = (int)apvts.getRawParameterValue ("stabilize")->load();
+            int rootKey   = (int)apvts.getRawParameterValue ("key")->load() + 60;
+            int scaleIdx  = (int)apvts.getRawParameterValue ("scale")->load();
+            int stabilize = (int)apvts.getRawParameterValue ("stabilize")->load();
 
             if (hz > 0.0f)
             {
+                currentT0 = getSampleRate() / hz;
+
                 float rawMidiF = freqToMidiF (hz);
                 int rawNote  = (int)std::round (rawMidiF);
                 int snapNote = quantizeToScale (rawNote, rootKey, scaleIdx);
@@ -284,14 +235,13 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             else
             {
                 detectedNote.store (-1);
-                // During silence we hold the last target note (don't reset it)
-                // so corrections stay in place when the vocalist briefly pauses.
+                // Hold last target note during brief silence
             }
         }
     }
 
-    // ── 2. Calculate how many semitones to shift ──────────────────────────
-    float targetShiftSemitones = 0.0f;
+    // ── 2. Calculate shift amount ─────────────────────────────────────────
+    float shiftSemitones = 0.0f;
 
     float hz = detectedHz.load();
     if (hz > 0.0f && currentTargetNote >= 0)
@@ -299,92 +249,50 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         float detectedNoteF = freqToMidiF (hz);
         float shiftNeeded   = (float)currentTargetNote - detectedNoteF;
 
-        // Octave fold: collapse to [-6, +6] so octave errors in YIN
-        // don't cause large correction jumps.
+        // Octave fold — prevents large jumps when YIN returns an octave error
         shiftNeeded -= 12.0f * std::round (shiftNeeded / 12.0f);
 
         float strength = apvts.getRawParameterValue ("strength")->load();
-        targetShiftSemitones = shiftNeeded * strength;
+        shiftSemitones = shiftNeeded * strength;
 
-        // Dead zone: if the singer is within 0.15 semitones of the target,
-        // don't correct — they're close enough. This prevents SoundTouch from
-        // constantly chasing tiny YIN fluctuations, which was a major source of
-        // the "pitch wheel wobble" artefact.
-        if (std::abs (targetShiftSemitones) < 0.15f)
-            targetShiftSemitones = 0.0f;
+        // ── Transparency dead zone ───────────────────────────────────────
+        // If the singer is within 45 cents of the target note, the voice
+        // already sounds on-pitch to a listener. Leave it completely alone.
+        // This is the key to sounding invisible: only fire when it's a real
+        // miss (> 45 cents off), not just natural pitch expression.
+        if (std::abs (shiftSemitones) < 0.45f)
+            shiftSemitones = 0.0f;
 
-        // Clamp to ±3 semitones to prevent runaway corrections
-        targetShiftSemitones = juce::jlimit (-3.0f, 3.0f, targetShiftSemitones);
+        // Hard cap at ±3 semitones to prevent runaway corrections
+        shiftSemitones = juce::jlimit (-3.0f, 3.0f, shiftSemitones);
 
-        correcting.store (std::abs (targetShiftSemitones) > 0.02f);
+        correcting.store (std::abs (shiftSemitones) > 0.01f);
     }
     else
     {
         correcting.store (false);
     }
 
-    // 50ms ramp — prevents clicks without creating audible pitch glides
-    smoothedShift.setTargetValue (targetShiftSemitones);
-    float shiftNow = 0.0f;
-    for (int i = 0; i < numSamples; ++i)
-        shiftNow = smoothedShift.getNextValue();
+    // ── 3. PSOLA pitch shift ──────────────────────────────────────────────
+    // Process each channel independently. Both channels share the same
+    // shiftSemitones and T0 — it's the same singer on both.
+    //
+    // PSOLA at shiftSemitones=0 is a perfect reconstruction (identity) filter,
+    // so when we're in the dead zone the voice passes through unchanged except
+    // for a tiny fixed delay (T0 samples, ~2–10ms, declared to host).
 
-    soundTouch.setPitchSemiTones (shiftNow);
-
-    // ── 3. Convert JUCE non-interleaved audio → SoundTouch interleaved ───
-    // JUCE:      [L0 L1 L2 ...] [R0 R1 R2 ...]
-    // SoundTouch: [L0 R0 L1 R1 L2 R2 ...]
-    if ((size_t)(numSamples * numST) > stInput.size())
-        stInput.resize ((size_t)(numSamples * numST));
-    if ((size_t)(numSamples * numST) > stOutput.size())
-        stOutput.resize ((size_t)(numSamples * numST));
-
-    if (numST == 2 && numChannels >= 2)
+    if (numChannels >= 1)
     {
-        const float* L = buffer.getReadPointer (0);
-        const float* R = buffer.getReadPointer (1);
-        for (int i = 0; i < numSamples; ++i)
-        {
-            stInput[i * 2]     = L[i];
-            stInput[i * 2 + 1] = R[i];
-        }
-    }
-    else
-    {
-        const float* M = buffer.getReadPointer (0);
-        for (int i = 0; i < numSamples; ++i)
-            stInput[i] = M[i];
+        const float* inL = buffer.getReadPointer (0);
+        float* outL      = buffer.getWritePointer (0);
+        psolaL.process (inL, outL, numSamples, shiftSemitones, currentT0);
     }
 
-    // ── 4. Run SoundTouch ─────────────────────────────────────────────────
-    soundTouch.putSamples (stInput.data(), (uint)numSamples);
-    int received = (int)soundTouch.receiveSamples (stOutput.data(), (uint)numSamples);
-
-    // ── 5. Write output back to buffer ────────────────────────────────────
-    if (numST == 2 && numChannels >= 2)
+    if (numChannels >= 2)
     {
-        float* L = buffer.getWritePointer (0);
-        float* R = buffer.getWritePointer (1);
-        for (int i = 0; i < received; ++i)
-        {
-            L[i] = stOutput[i * 2];
-            R[i] = stOutput[i * 2 + 1];
-        }
-        // If SoundTouch returned fewer samples, pass through dry input
-        // instead of silence — prevents the startup click/gap.
-        for (int i = received; i < numSamples; ++i)
-        {
-            L[i] = stInput[i * 2];
-            R[i] = stInput[i * 2 + 1];
-        }
-    }
-    else
-    {
-        float* M = buffer.getWritePointer (0);
-        for (int i = 0; i < received; ++i)
-            M[i] = stOutput[i];
-        for (int i = received; i < numSamples; ++i)
-            M[i] = stInput[i];
+        const float* inR = buffer.getReadPointer (1);
+        float* outR      = buffer.getWritePointer (1);
+        psolaR.process (inR, outR, numSamples, shiftSemitones, currentT0);
     }
 }
 
