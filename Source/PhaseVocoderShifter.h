@@ -81,7 +81,7 @@ public:
     {
         const float ratio      = std::pow (2.0f, shiftSemitones / 12.0f);
         const float crossTarget = (shiftSemitones == 0.0f) ? 0.0f : 1.0f;
-        constexpr float kStep  = 1.0f / 512.0f;   // ~11 ms crossfade
+        constexpr float kStep  = 1.0f / 2048.0f;  // ~46 ms crossfade — must match PV settling time (4 grains × HOP)
 
         // Seed synthesis phases from the analysis on the bypass→correction
         // transition so the first corrected frame is phase-aligned with the
