@@ -361,9 +361,13 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             L[i] = stOutput[i * 2];
             R[i] = stOutput[i * 2 + 1];
         }
-        // If SoundTouch returned fewer samples than expected, zero the rest
+        // If SoundTouch returned fewer samples, pass through dry input
+        // instead of silence — prevents the startup click/gap.
         for (int i = received; i < numSamples; ++i)
-            L[i] = R[i] = 0.0f;
+        {
+            L[i] = stInput[i * 2];
+            R[i] = stInput[i * 2 + 1];
+        }
     }
     else
     {
@@ -371,7 +375,7 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         for (int i = 0; i < received; ++i)
             M[i] = stOutput[i];
         for (int i = received; i < numSamples; ++i)
-            M[i] = 0.0f;
+            M[i] = stInput[i];
     }
 }
 
