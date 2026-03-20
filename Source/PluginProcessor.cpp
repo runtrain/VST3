@@ -90,16 +90,11 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     stInput .resize ((size_t)(samplesPerBlock * numCh));
     stOutput.resize ((size_t)(samplesPerBlock * numCh));
 
-    // Smooth the detected MIDI note over 150ms so rapid YIN fluctuations
-    // don't cause the correction to wobble back and forth.
-    smoothedDetectedMidi.reset ((int)sampleRate, 0.15);
-    smoothedDetectedMidi.setCurrentAndTargetValue (0.0f);
-    firstPitchReceived = false;
-
-    // Smooth the final pitch shift over 40ms — just enough to prevent onset clicks.
-    // The input is already stable thanks to smoothedDetectedMidi, so we don't
-    // need a long window here.
-    smoothedShift.reset ((int)sampleRate, 0.04);
+    // 120ms ramp on the final shift value. This prevents audible clicks when
+    // correction kicks in or when the target note changes. Long enough to
+    // mask any discontinuity, short enough that intentional corrections still
+    // feel responsive.
+    smoothedShift.reset ((int)sampleRate, 0.12);
     smoothedShift.setCurrentAndTargetValue (0.0f);
 
     // Declare our latency to the host so it can compensate (for track sync)
@@ -111,7 +106,6 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     candidateCount     = 0;
     ringWritePos       = 0;
     samplesSinceAnalysis = 0;
-    firstPitchReceived = false;
     detectedHz   = -1.0f;
     detectedNote = -1;
     targetNote   = -1;
@@ -184,30 +178,44 @@ int RolyPolyFixAudioProcessor::quantizeToScale (int midiNote, int rootKey, int s
 // ── Note stabilizer ───────────────────────────────────────────────────────────
 // Prevents roly-polies: we don't switch the target note until the same
 // quantized note has been detected 'requiredCount' times in a row.
-void RolyPolyFixAudioProcessor::updateStabilizer (int quantizedNote, int requiredCount)
+void RolyPolyFixAudioProcessor::updateStabilizer (int quantizedNote, int requiredCount,
+                                                    float rawMidiF)
 {
     if (quantizedNote < 0)
     {
-        // Silence detected — reset candidate tracking but hold the current target
         candidateCount = 0;
         return;
     }
 
     if (quantizedNote == currentTargetNote)
     {
-        // Still on the same note — nothing to do
         candidateNote  = -1;
         candidateCount = 0;
         return;
     }
 
+    // Dead zone: if the singer's actual pitch (before quantization) is within
+    // 0.8 semitones of the current target, don't even consider switching.
+    // This stops the rapid C↔C# flipping that causes the "pitch wheel" wobble
+    // when the singer sits near the boundary between two scale notes.
+    if (currentTargetNote >= 0)
+    {
+        float dist = rawMidiF - (float)currentTargetNote;
+        // Fold octave distance
+        dist -= 12.0f * std::round (dist / 12.0f);
+        if (std::abs (dist) < 0.8f)
+        {
+            candidateNote  = -1;
+            candidateCount = 0;
+            return;
+        }
+    }
+
     if (quantizedNote == candidateNote)
     {
-        // Seen this new candidate again — increment confidence
         ++candidateCount;
         if (candidateCount >= requiredCount)
         {
-            // Confident — switch target
             currentTargetNote = candidateNote;
             candidateNote     = -1;
             candidateCount    = 0;
@@ -215,7 +223,6 @@ void RolyPolyFixAudioProcessor::updateStabilizer (int quantizedNote, int require
     }
     else
     {
-        // A different candidate appeared — start tracking it from 1
         candidateNote  = quantizedNote;
         candidateCount = 1;
     }
@@ -269,19 +276,7 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 int snapNote = quantizeToScale (rawNote, rootKey, scaleIdx);
                 detectedNote.store (rawNote);
 
-                // Feed the smoothed-MIDI tracker. On the very first detection
-                // we snap to the exact value so we don't ramp in from 0.
-                if (!firstPitchReceived)
-                {
-                    smoothedDetectedMidi.setCurrentAndTargetValue (rawMidiF);
-                    firstPitchReceived = true;
-                }
-                else
-                {
-                    smoothedDetectedMidi.setTargetValue (rawMidiF);
-                }
-
-                updateStabilizer (snapNote, stabilize);
+                updateStabilizer (snapNote, stabilize, rawMidiF);
                 targetNote.store (currentTargetNote);
             }
             else
@@ -294,21 +289,16 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // ── 2. Calculate how many semitones to shift ──────────────────────────
-    // Advance smoothedDetectedMidi by this block and take the end value.
-    // This is a 150ms low-pass on the raw YIN output, which eliminates the
-    // jitter that previously sounded like a pitch wheel spinning back and forth.
-    float smoothMidi = 0.0f;
-    for (int i = 0; i < numSamples; ++i)
-        smoothMidi = smoothedDetectedMidi.getNextValue();
-
     float targetShiftSemitones = 0.0f;
 
-    if (detectedHz.load() > 0.0f && currentTargetNote >= 0)
+    float hz = detectedHz.load();
+    if (hz > 0.0f && currentTargetNote >= 0)
     {
-        float shiftNeeded = (float)currentTargetNote - smoothMidi;
+        float detectedNoteF = freqToMidiF (hz);
+        float shiftNeeded   = (float)currentTargetNote - detectedNoteF;
 
-        // Octave fold: collapse to [-6, +6] so an octave error in YIN doesn't
-        // cause a large jump.
+        // Octave fold: collapse to [-6, +6] so octave errors in YIN
+        // don't cause large correction jumps.
         shiftNeeded -= 12.0f * std::round (shiftNeeded / 12.0f);
 
         float strength = apvts.getRawParameterValue ("strength")->load();
@@ -324,7 +314,7 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         correcting.store (false);
     }
 
-    // 40ms smoother — just prevents an audible click at correction onset
+    // 120ms ramp — masks clicks from correction onset and note transitions
     smoothedShift.setTargetValue (targetShiftSemitones);
     float shiftNow = 0.0f;
     for (int i = 0; i < numSamples; ++i)

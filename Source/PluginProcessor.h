@@ -84,7 +84,7 @@ private:
     int candidateNote     = -1;  // the note we might switch to
     int candidateCount    = 0;   // how many times in a row we've seen it
 
-    void updateStabilizer (int quantizedNote, int requiredCount);
+    void updateStabilizer (int quantizedNote, int requiredCount, float rawMidiF);
 
     // ── Scale quantization ────────────────────────────────────────────────
     // Snaps a MIDI note to the nearest note allowed in the current scale.
@@ -93,13 +93,8 @@ private:
     // ── Pitch shifting (SoundTouch) ───────────────────────────────────────
     soundtouch::SoundTouch soundTouch;
 
-    // Smoothly moves toward the target shift to avoid clicks
-    // Smooths the raw detected MIDI note over 150ms — this is what removes the
-    // "pitch wheel wobble": we correct toward a stable pitch estimate, not a noisy one.
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedDetectedMidi;
-    bool firstPitchReceived = false;
-
-    // Smooths the final shift value over 40ms to prevent clicks at correction onset
+    // Smooths the final shift value over 120ms to prevent clicks when the
+    // correction amount changes (especially at onset and note transitions)
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedShift;
 
     // Temporary interleaved buffers for SoundTouch I/O
