@@ -94,6 +94,12 @@ private:
     soundtouch::SoundTouch soundTouch;
 
     // Smoothly moves toward the target shift to avoid clicks
+    // Smooths the raw detected MIDI note over 150ms — this is what removes the
+    // "pitch wheel wobble": we correct toward a stable pitch estimate, not a noisy one.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedDetectedMidi;
+    bool firstPitchReceived = false;
+
+    // Smooths the final shift value over 40ms to prevent clicks at correction onset
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedShift;
 
     // Temporary interleaved buffers for SoundTouch I/O
