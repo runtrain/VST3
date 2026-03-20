@@ -74,8 +74,12 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     soundTouch.setChannels    ((uint)numCh);
     soundTouch.setTempoChange (0.0);     // change pitch only, not tempo
     soundTouch.setPitchSemiTones (0.0f);
-    soundTouch.setSetting (SETTING_USE_QUICKSEEK,  1);
+    // Quality settings tuned for vocals:
+    soundTouch.setSetting (SETTING_USE_QUICKSEEK,  0);   // full quality (was 1 = fast/low-quality)
     soundTouch.setSetting (SETTING_USE_AA_FILTER,  1);
+    soundTouch.setSetting (SETTING_SEQUENCE_MS,   40);   // shorter processing window for vocals
+    soundTouch.setSetting (SETTING_SEEKWINDOW_MS, 15);   // tighter seek for clean pitch shifts
+    soundTouch.setSetting (SETTING_OVERLAP_MS,     8);   // standard overlap
     soundTouch.clear();
 
     // Pre-prime SoundTouch with silence so its internal buffer is full on the
@@ -90,11 +94,9 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     stInput .resize ((size_t)(samplesPerBlock * numCh));
     stOutput.resize ((size_t)(samplesPerBlock * numCh));
 
-    // 120ms ramp on the final shift value. This prevents audible clicks when
-    // correction kicks in or when the target note changes. Long enough to
-    // mask any discontinuity, short enough that intentional corrections still
-    // feel responsive.
-    smoothedShift.reset ((int)sampleRate, 0.12);
+    // 50ms ramp on the final shift value — just enough to prevent clicks
+    // without creating audible pitch glides during note transitions.
+    smoothedShift.reset ((int)sampleRate, 0.05);
     smoothedShift.setCurrentAndTargetValue (0.0f);
 
     // Declare our latency to the host so it can compensate (for track sync)
@@ -304,6 +306,13 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         float strength = apvts.getRawParameterValue ("strength")->load();
         targetShiftSemitones = shiftNeeded * strength;
 
+        // Dead zone: if the singer is within 0.15 semitones of the target,
+        // don't correct — they're close enough. This prevents SoundTouch from
+        // constantly chasing tiny YIN fluctuations, which was a major source of
+        // the "pitch wheel wobble" artefact.
+        if (std::abs (targetShiftSemitones) < 0.15f)
+            targetShiftSemitones = 0.0f;
+
         // Clamp to ±3 semitones to prevent runaway corrections
         targetShiftSemitones = juce::jlimit (-3.0f, 3.0f, targetShiftSemitones);
 
@@ -314,7 +323,7 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         correcting.store (false);
     }
 
-    // 120ms ramp — masks clicks from correction onset and note transitions
+    // 50ms ramp — prevents clicks without creating audible pitch glides
     smoothedShift.setTargetValue (targetShiftSemitones);
     float shiftNow = 0.0f;
     for (int i = 0; i < numSamples; ++i)
