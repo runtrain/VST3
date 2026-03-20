@@ -6,7 +6,7 @@
 
 #include <JuceHeader.h>
 #include "PitchDetector.h"
-#include "PsolaShifter.h"
+#include "PhaseVocoderShifter.h"
 
 class RolyPolyFixAudioProcessor : public juce::AudioProcessor
 {
@@ -82,10 +82,10 @@ private:
     // ── Scale quantization ────────────────────────────────────────────────
     int quantizeToScale (int midiNote, int rootKey, int scaleIndex);
 
-    // ── PSOLA pitch shifter ───────────────────────────────────────────────
+    // ── Phase vocoder pitch shifter ───────────────────────────────────────
     // One shifter per channel (left and right processed independently)
-    PsolaShifter psolaL;
-    PsolaShifter psolaR;
+    PhaseVocoderShifter psolaL;
+    PhaseVocoderShifter psolaR;
 
     // Current detected T0 (shared between channels — same singer, same pitch)
     float currentT0 = 0.0f;

@@ -69,7 +69,7 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     // Both the PSOLA path and the bypass path delay by exactly bypassDelay =
     // (int)(sampleRate/220 + 0.5) samples (~200 samples / ~4ms at 44100 Hz).
     // Report this so the DAW can keep the track in sync.
-    setLatencySamples ((int)(sampleRate / 220.0 + 0.5));
+    setLatencySamples (psolaL.latencySamples());   // 2048 samples (~46ms)
 
     // Reset state
     currentTargetNote    = -1;
