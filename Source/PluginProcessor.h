@@ -73,6 +73,7 @@ private:
     static constexpr int HOP_SIZE      = 512;    // re-analyse every ~12ms
 
     std::vector<float> analysisRing;    // circular buffer of audio
+    std::vector<float> analysisWindow;  // pre-allocated window for YIN (avoids audio-thread alloc)
     int   ringWritePos         = 0;
     int   samplesSinceAnalysis = 0;
 

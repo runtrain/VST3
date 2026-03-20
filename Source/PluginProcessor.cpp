@@ -21,7 +21,8 @@ RolyPolyFixAudioProcessor::RolyPolyFixAudioProcessor()
       apvts (*this, nullptr, "Parameters", createParameterLayout()),
       pitchDetector (ANALYSIS_SIZE, 44100.0f, 0.12f)
 {
-    analysisRing.assign (ANALYSIS_SIZE, 0.0f);
+    analysisRing.assign   (ANALYSIS_SIZE, 0.0f);
+    analysisWindow.assign (ANALYSIS_SIZE, 0.0f);
 }
 
 RolyPolyFixAudioProcessor::~RolyPolyFixAudioProcessor() {}
@@ -240,12 +241,11 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             samplesSinceAnalysis = 0;
 
             // Copy the circular buffer into a contiguous window (oldest → newest)
-            std::vector<float> window (ANALYSIS_SIZE);
             for (int j = 0; j < ANALYSIS_SIZE; ++j)
-                window[j] = analysisRing[(ringWritePos + j) % ANALYSIS_SIZE];
+                analysisWindow[j] = analysisRing[(ringWritePos + j) % ANALYSIS_SIZE];
 
             // Run YIN pitch detection
-            float hz = pitchDetector.detectPitch (window.data(), ANALYSIS_SIZE);
+            float hz = pitchDetector.detectPitch (analysisWindow.data(), ANALYSIS_SIZE);
             detectedHz.store (hz);
 
             // Read current parameter values
