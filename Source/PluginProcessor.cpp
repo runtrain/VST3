@@ -77,6 +77,14 @@ void RolyPolyFixAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     soundTouch.setSetting (SETTING_USE_AA_FILTER,  1);
     soundTouch.clear();
 
+    // Pre-prime SoundTouch with silence so its internal buffer is full on the
+    // first processBlock call. Without this, receiveSamples returns 0 for the
+    // first ~ANALYSIS_SIZE samples, which causes a zero-filled gap → click.
+    {
+        std::vector<float> zeros ((size_t)(ANALYSIS_SIZE * numCh), 0.0f);
+        soundTouch.putSamples (zeros.data(), (uint)ANALYSIS_SIZE);
+    }
+
     // Pre-allocate I/O interleave buffers for worst-case block size
     stInput .resize ((size_t)(samplesPerBlock * numCh));
     stOutput.resize ((size_t)(samplesPerBlock * numCh));
@@ -272,7 +280,12 @@ void RolyPolyFixAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     if (hz > 0.0f && currentTargetNote >= 0)
     {
         float detectedNoteF = freqToMidiF (hz);          // e.g. 63.7
-        float shiftNeeded   = (float)currentTargetNote - detectedNoteF;  // e.g. 0.3
+        float shiftNeeded   = (float)currentTargetNote - detectedNoteF;
+
+        // Octave fold: collapse the shift to [-6, +6] semitones so that octave
+        // errors in YIN (e.g. detecting a harmonic instead of the fundamental)
+        // never cause large correction jumps that multiply pitch wobble.
+        shiftNeeded -= 12.0f * std::round (shiftNeeded / 12.0f);
 
         float strength = apvts.getRawParameterValue ("strength")->load();
         targetShiftSemitones = shiftNeeded * strength;
